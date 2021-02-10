@@ -193,31 +193,56 @@ void eval(char *cmdline)
     
     strcpy(buf, cmdline);
     bg = parseline(buf, argv); 
+    int state=(bg)?BG:FG;
+
     if (argv[0] == NULL)  
-	return;   /* Ignore empty lines */
+	    return;   /* Ignore empty lines */
 
     if (!builtin_command(argv)) { 
+
+        sigset_t mask_one, prev_one;
+        sigemptyset(&mask_one);
+        sigaddset(&mask_one, SIGCHLD);
+
+        /* block signal child */
+        sigprocmask(SIG_BLOCK, &mask_one, &prev_one);
         if ((pid = fork()) == 0) {   /* Child runs user job */
-            
+            /* unblock in child process */
+            sigprocmask(SIG_SETMASK, &prev_one, NULL);
+
             if (execve(argv[0], argv, environ) < 0) {
                 printf("%s: Command not found.\n", argv[0]);
                 exit(0);
             }
             
         }else{
-            printf("preparing pid: %d %s\n",pid, argv[0]);
+            // save job info
+            sigset_t mask_all, prev_all;
+            sigfillset(&mask_all);
+            sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
+            printf("preparing adding to job list pid: %d %s\n",pid, argv[0]);
+            addjob(jobs, pid, state, cmdline);
+            listjobs(jobs);
+            sigprocmask(SIG_SETMASK, &prev_all, NULL);
+
         }
 
-	/* Parent waits for foreground job to terminate */
-	if (!bg) {
-	    int status;
-	    if ((pid=waitpid(pid, &status, 0)) < 0)
-		    unix_error("waitfg: waitpid error");
-        printf("parent reaped child pid %d\n", pid);
-	}
-	else
-	    printf("%d %s", pid, cmdline);
+        
+
+
+	    /* Parent waits for foreground job to terminate */
+	    if (!bg) {
+            while(fgpid(jobs))
+             sigsuspend(&prev_one);   
+	    }
+	    else{
+	       printf("%d %s", pid, cmdline);
+        }
+
+        /* unblock child signal */
+        sigprocmask(SIG_SETMASK, &prev_one, NULL);
     }
+
     return;
 }
 
@@ -301,6 +326,10 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    while(fgpid(jobs)){
+        pause();// sigsuspend in order not to miss sigchld signal
+    }
+    printf("reaped %d", pid);
     return;
 }
 
@@ -324,6 +353,8 @@ void sigchld_handler(int sig) {
   /* exit or be stopped or continue */
   while ((pid = waitpid(-1, &status, WNOHANG|WUNTRACED|WCONTINUED)) > 0) {
       printf("sigchild handler,from reaped child %d\n", pid);
+      deletejob(jobs,pid);
+      listjobs(jobs);
   }
 
   errno = old_errno;
@@ -341,12 +372,12 @@ void sigint_handler(int sig)
     if(getpid()==TSH_PID){
         Signal(SIGINT,  SIG_DFL);
         //kill(TSH_PID, SIGINT);
-        printf("tsh is waiting reaping all children...\n");
+        printf("\nSIGINT sent to tsh (process group id %d)\ntsh is waiting reaping all children in the same process group ...\n", TSH_PID);
         pid_t pid;
         while ((pid = waitpid(-1, NULL, 0)) > 0) {
             printf("tsh reaped child %d\n", pid);
         }
-        printf("\ntsh exiting...\n");
+        printf("tsh exiting...\n");
         exit(0);
     }
     return;
