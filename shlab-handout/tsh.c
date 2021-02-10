@@ -53,6 +53,12 @@ struct job_t jobs[MAXJOBS]; /* The job list */
 
 int TSH_PID=-1;
 
+/*
+FG != parent process
+There is only one FG job at the same time
+*/
+int CURRENT_FG=-1;
+
 
 /* Function prototypes */
 
@@ -156,22 +162,6 @@ int main(int argc, char **argv)
 
     exit(0); /* control never reaches here */
 }
-
-
-/* If first arg is a builtin command, run it and return true */
-int builtin_command(char **argv) 
-{
-    if (!strcmp(argv[0], "quit")) /* quit command */
-	    exit(0);  
-    if (!strcmp(argv[0], "&"))    /* Ignore singleton & */
-	    return 1;
-    if(!strcmp(argv[0],"kill")){
-        return 1;
-    }
-
-    return 0;                     /* Not a builtin command */
-}
-/* $end eval */
   
 /* 
  * eval - Evaluate the command line that the user has just typed in
@@ -198,7 +188,7 @@ void eval(char *cmdline)
     if (argv[0] == NULL)  
 	    return;   /* Ignore empty lines */
 
-    if (!builtin_command(argv)) { 
+    if (!builtin_cmd(argv)) { 
 
         sigset_t mask_one, prev_one;
         sigemptyset(&mask_one);
@@ -228,10 +218,9 @@ void eval(char *cmdline)
         }
 
         
-
-
 	    /* Parent waits for foreground job to terminate */
 	    if (!bg) {
+            CURRENT_FG=pid;
             while(fgpid(jobs))
              sigsuspend(&prev_one);   
 	    }
@@ -310,6 +299,14 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv) 
 {
+    if (!strcmp(argv[0], "quit")) /* quit command */
+	    exit(0);  
+    if (!strcmp(argv[0], "&"))    /* Ignore singleton & */
+	    return 1;
+    if(!strcmp(argv[0],"fg")){
+        kill(atoi(argv[1]), SIGCONT);
+        return 1;
+    }
     return 0;     /* not a builtin command */
 }
 
@@ -326,10 +323,19 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    sigset_t mask_one, prev_one;
+    sigemptyset(&mask_one);
+    sigaddset(&mask_one, SIGCHLD);
+    /* block signal child */
+    sigprocmask(SIG_BLOCK, &mask_one, &prev_one);
+
     while(fgpid(jobs)){
-        pause();// sigsuspend in order not to miss sigchld signal
+       sigsuspend(&prev_one);// sigsuspend in order not to miss sigchld signal
     }
     printf("reaped %d", pid);
+
+    /* unblock child signal */
+    sigprocmask(SIG_SETMASK, &prev_one, NULL);
     return;
 }
 
@@ -344,7 +350,6 @@ void waitfg(pid_t pid)
  *     available zombie children, but doesn't wait for any other
  *     currently running children to terminate.  
  */
-/* SIGCONT signal */
 void sigchld_handler(int sig) {
   int old_errno = errno;
   int status;
@@ -352,12 +357,35 @@ void sigchld_handler(int sig) {
 
   /* exit or be stopped or continue */
   while ((pid = waitpid(-1, &status, WNOHANG|WUNTRACED|WCONTINUED)) > 0) {
-      printf("sigchild handler,from reaped child %d\n", pid);
-      deletejob(jobs,pid);
-      listjobs(jobs);
+
+      /* exit normally */
+    if (WIFEXITED(status) || WIFSIGNALED(status)) {
+      printf("\nsigchld handler: exit normally: %d\n", pid);
+    }
+
+    /* be stopped */
+    if (WIFSTOPPED(status)) {
+        printf("\nsigchld handler: stopped: %d\n", pid);
+    }
+
+    /* continue */
+    if(WIFCONTINUED(status)) {
+      printf("\nsigchld handler: continued: %d\n", pid);
+    }
+
+
+    printf("sigchild handler,signal sent from child %d\n", pid);
+    if(pid==CURRENT_FG){
+          CURRENT_FG=-1;
+          printf("sigchild_handler: FG job reaped %d\n", CURRENT_FG);
+    }
+    deletejob(jobs,pid);
+    listjobs(jobs);
   }
 
   errno = old_errno;
+
+  return ;
 }
 
 /* 
@@ -379,6 +407,8 @@ void sigint_handler(int sig)
         }
         printf("tsh exiting...\n");
         exit(0);
+    }else{
+        printf("kill -INT %d is typed from terminal\n", getpid());
     }
     return;
 }
@@ -390,6 +420,13 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
+    if (getpid()==TSH_PID) {
+        printf("\nSIGTSTP sent to tsh (process group id %d)\n", TSH_PID);
+        Signal(SIGTSTP, SIG_DFL);
+        kill(getpid(), SIGTSTP);
+    } else {
+        kill(fgpid(jobs), SIGTSTP);
+    }
     return;
 }
 
