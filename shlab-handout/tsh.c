@@ -212,7 +212,6 @@ void eval(char *cmdline)
             sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
             printf("preparing adding to job list pid: %d %s\n",pid, argv[0]);
             addjob(jobs, pid, state, cmdline);
-            listjobs(jobs);
             sigprocmask(SIG_SETMASK, &prev_all, NULL);
 
         }
@@ -221,8 +220,9 @@ void eval(char *cmdline)
 	    /* Parent waits for foreground job to terminate */
 	    if (!bg) {
             CURRENT_FG=pid;
-            while(fgpid(jobs))
-             sigsuspend(&prev_one);   
+            //while(fgpid(jobs))
+            // sigsuspend(&prev_one);   
+            waitfg(pid);
 	    }
 	    else{
 	       printf("%d %s", pid, cmdline);
@@ -284,13 +284,13 @@ int parseline(const char *cmdline, char **argv)
     argv[argc] = NULL;
     
     if (argc == 0)  /* ignore blank line */
-	return 1;
+	    return 1;
 
     /* should the job run in the background? */
     if ((bg = (*argv[argc-1] == '&')) != 0) {
-	argv[--argc] = NULL;
+	    argv[--argc] = NULL;
     }
-    return bg;
+        return bg;
 }
 
 /* 
@@ -303,10 +303,22 @@ int builtin_cmd(char **argv)
 	    exit(0);  
     if (!strcmp(argv[0], "&"))    /* Ignore singleton & */
 	    return 1;
-    if(!strcmp(argv[0],"fg")){
-        kill(atoi(argv[1]), SIGCONT);
+    if (!strcmp(argv[0], "jobs")){
+        listjobs(jobs);
         return 1;
     }
+    if (!strcmp(argv[0], "bg")){
+        do_bgfg(argv);
+        return 1;
+    }
+    // how to send SIGINT to child process ???
+    //if(!strcmp(argv[0],"kill")){
+    //    printf("kill inputed.%d\n", atoi(argv[1]));
+    //    kill(atoi(argv[1]), SIGINT);
+    //    return 1;
+    //}
+    
+
     return 0;     /* not a builtin command */
 }
 
@@ -315,6 +327,19 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
+    int jobid=atoi(argv[1]);
+
+    if (!strcmp(argv[0], "bg")){
+        kill(-jobid, SIGCONT);// kill ALL processes in the process group
+    }else if(!strcmp(argv[0], "fg")){
+        kill(-jobid, SIGCONT);
+        // argument should be process group id (job id)
+        // because any process in the group can be returned by waitpid
+        waitfg(atoi(argv[1]));
+    }else{
+        printf("do_bgfg error\n");
+    }
+    
     return;
 }
 
@@ -323,19 +348,13 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    sigset_t mask_one, prev_one;
-    sigemptyset(&mask_one);
-    sigaddset(&mask_one, SIGCHLD);
-    /* block signal child */
-    sigprocmask(SIG_BLOCK, &mask_one, &prev_one);
-
+    sigset_t mask_empty;
+    sigemptyset(&mask_empty);
     while(fgpid(jobs)){
-       sigsuspend(&prev_one);// sigsuspend in order not to miss sigchld signal
+       sigsuspend(&mask_empty);// sigsuspend in order not to miss sigchld signal
     }
-    printf("reaped %d", pid);
+    printf("finish waiting FG %d\n", pid);
 
-    /* unblock child signal */
-    sigprocmask(SIG_SETMASK, &prev_one, NULL);
     return;
 }
 
@@ -354,6 +373,8 @@ void sigchld_handler(int sig) {
   int old_errno = errno;
   int status;
   pid_t pid;
+
+  printf("caught SIGCHLD\n");
 
   /* exit or be stopped or continue */
   while ((pid = waitpid(-1, &status, WNOHANG|WUNTRACED|WCONTINUED)) > 0) {
@@ -380,7 +401,6 @@ void sigchld_handler(int sig) {
           printf("sigchild_handler: FG job reaped %d\n", CURRENT_FG);
     }
     deletejob(jobs,pid);
-    listjobs(jobs);
   }
 
   errno = old_errno;
@@ -395,6 +415,8 @@ void sigchld_handler(int sig) {
  */
 void sigint_handler(int sig) 
 {
+    printf("caught SIGINT\n");
+    
     // ATTENTION Ctrl+c not only sent to tsh process 
     // but also do sent to descendents (child processes) too!!
     if(getpid()==TSH_PID){
@@ -411,6 +433,7 @@ void sigint_handler(int sig)
         printf("kill -INT %d is typed from terminal\n", getpid());
     }
     return;
+    
 }
 
 /*
@@ -420,6 +443,7 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
+    printf("caught SIGTSTP\n");
     if (getpid()==TSH_PID) {
         printf("\nSIGTSTP sent to tsh (process group id %d)\n", TSH_PID);
         Signal(SIGTSTP, SIG_DFL);
