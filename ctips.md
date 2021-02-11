@@ -8,3 +8,4 @@ NOT OK; int *port;then, function(port)
 - local program variable when string declare as char port[100]; NOT AS char* port;
 
 - tenative arg: const char** argv means it is not filled in this fuction!!
+- sscanf(argv[1], "%%%d",&id)>0

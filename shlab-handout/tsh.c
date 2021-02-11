@@ -307,7 +307,7 @@ int builtin_cmd(char **argv)
         listjobs(jobs);
         return 1;
     }
-    if (!strcmp(argv[0], "bg")){
+    if (!strcmp(argv[0], "bg")||!strcmp(argv[0], "fg")){
         do_bgfg(argv);
         return 1;
     }
@@ -327,15 +327,37 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
-    int jobid=atoi(argv[1]);
+
+    struct job_t* job;
+    int id;
+
+    if(sscanf(argv[1], "%%%d",&id)>0){
+        job=getjobjid(jobs, id);
+        if(job==NULL){
+            printf("%%%d: No such job\n", id);
+            return ;
+        }
+    }else if(sscanf(argv[1], "%d", &id)>0){
+        job=getjobpid(jobs, id);
+        if(job==NULL){
+            printf("(%d): No such process\n", id);
+            return ;
+        }
+    }else{
+        printf("%s argument must be a PID or %%jobid\n", argv[0]);
+        return ;
+    }
 
     if (!strcmp(argv[0], "bg")){
-        kill(-jobid, SIGCONT);// kill ALL processes in the process group
+        kill(-(job->pid), SIGCONT);// kill ALL processes in the process group
+        job->state=BG;
+        printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
     }else if(!strcmp(argv[0], "fg")){
-        kill(-jobid, SIGCONT);
+        kill(-(job->pid), SIGCONT);
+        job->state=FG;
         // argument should be process group id (job id)
         // because any process in the group can be returned by waitpid
-        waitfg(atoi(argv[1]));
+        waitfg(job->pid);
     }else{
         printf("do_bgfg error\n");
     }
