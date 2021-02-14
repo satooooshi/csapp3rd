@@ -1,6 +1,7 @@
 memo.md
 
 objdump -d bomb > bomb.txt
+objdump -t bomb > bomb_symtab.txt
 
 gdb bomb
 run key.txt
